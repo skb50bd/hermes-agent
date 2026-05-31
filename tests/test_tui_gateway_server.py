@@ -5245,3 +5245,48 @@ def test_block_emit_prompt_expire_kind_matches_event_prefix(monkeypatch):
     kinds = [e[2]["kind"] for e in expires]
     assert "sudo" in kinds
     assert "secret" in kinds
+
+
+def test_block_no_expire_when_answer_lands_in_timeout_race(monkeypatch):
+    """Race guard (Copilot review on PR #35987): _respond() can set
+    _answers[rid] + ev.set() AFTER ev.wait() already returned False
+    (timeout) but BEFORE _block reaches its finally. The answer is
+    genuinely accepted — _block returns it — so prompt.expire must NOT
+    fire, or it would clear the overlay out from under a real answer.
+
+    We simulate the exact interleaving by patching Event.wait to return
+    False (timeout) while injecting the answer into _answers just before
+    returning, mimicking a _respond() that landed in the gap.
+    """
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
+
+    real_wait = threading.Event.wait
+
+    def racing_wait(self, timeout=None):
+        # Find the rid this event belongs to and inject an answer, then
+        # report a timeout — exactly the lost-wakeup ordering.
+        for rid, (_sid, ev) in list(server._pending.items()):
+            if ev is self:
+                server._answers[rid] = "late-but-accepted"
+                break
+        return False  # pretend we timed out
+
+    monkeypatch.setattr(threading.Event, "wait", racing_wait)
+
+    answer = server._block(
+        "clarify.request",
+        "sid_race",
+        {"question": "ok?", "choices": ["yes", "no"]},
+        timeout=0.01,
+    )
+
+    # The accepted answer must be returned to the agent...
+    assert answer == "late-but-accepted"
+    # ...and NO expiry should have been emitted despite the False wait.
+    kinds = [e[0] for e in emitted]
+    assert "prompt.expire" not in kinds, (
+        "race regression: prompt.expire fired even though an answer was "
+        "set during the timeout window — overlay would be cleared out "
+        "from under a legitimate late answer"
+    )

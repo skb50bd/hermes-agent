@@ -849,7 +849,8 @@ export function useMainApp(gw: GatewayClient) {
   slashRef.current = slash
 
   const respondWith = useCallback(
-    (method: string, params: Record<string, unknown>, done: () => void) => rpc(method, params).then(r => r && done()),
+    (method: string, params: Record<string, unknown>, done: () => void, onFail?: () => void) =>
+      rpc(method, params).then(r => (r ? done() : onFail?.())),
     [rpc]
   )
 
@@ -869,10 +870,25 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      return respondWith('sudo.respond', { password: pw, request_id: overlay.sudo.requestId }, () => {
-        patchOverlayState({ sudo: null })
-        patchUiState({ status: 'running…' })
-      })
+      const requestId = overlay.sudo.requestId
+
+      return respondWith(
+        'sudo.respond',
+        { password: pw, request_id: requestId },
+        () => {
+          patchOverlayState({ sudo: null })
+          patchUiState({ status: 'running…' })
+        },
+        // RPC failed — usually "no pending sudo request" because the
+        // server-side _block already timed out. prompt.expire SHOULD have
+        // cleared the overlay; clear it here too in case that event was
+        // missed, or the user is stuck on a dead password prompt.
+        () => {
+          if (getOverlayState().sudo?.requestId === requestId) {
+            patchOverlayState({ sudo: null })
+          }
+        }
+      )
     },
     [overlay.sudo, respondWith]
   )
@@ -883,10 +899,22 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      return respondWith('secret.respond', { request_id: overlay.secret.requestId, value }, () => {
-        patchOverlayState({ secret: null })
-        patchUiState({ status: 'running…' })
-      })
+      const requestId = overlay.secret.requestId
+
+      return respondWith(
+        'secret.respond',
+        { request_id: requestId, value },
+        () => {
+          patchOverlayState({ secret: null })
+          patchUiState({ status: 'running…' })
+        },
+        // Same dead-prompt guard as sudo — see answerSudo above.
+        () => {
+          if (getOverlayState().secret?.requestId === requestId) {
+            patchOverlayState({ secret: null })
+          }
+        }
+      )
     },
     [overlay.secret, respondWith]
   )

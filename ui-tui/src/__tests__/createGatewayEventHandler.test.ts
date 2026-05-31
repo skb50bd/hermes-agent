@@ -1162,4 +1162,54 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { kind: 'clarify', request_id: 'rid-clarify-stale' }, type: 'prompt.expire' } as any)
     expect(getOverlayState().clarify).toMatchObject({ requestId: 'rid-clarify-2' })
   })
+
+  it('clears a stale secret overlay when server emits prompt.expire', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { env_var: 'OPENAI_API_KEY', prompt: 'enter key', request_id: 'rid-secret-1' },
+      type: 'secret.request'
+    } as any)
+    expect(getOverlayState().secret).toMatchObject({ requestId: 'rid-secret-1' })
+
+    onEvent({ payload: { kind: 'secret', request_id: 'rid-secret-1' }, type: 'prompt.expire' } as any)
+    expect(getOverlayState().secret).toBeNull()
+  })
+
+  it('resets the prompt-specific status when an expiry clears a mounted overlay', () => {
+    // The request set status to "waiting for input…"; after expiry nothing
+    // else resets it, so the bar would lie while the agent streams. Expiry
+    // must snap status back to busy/ready.
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { choices: ['a', 'b'], question: 'q?', request_id: 'rid-status-1' },
+      type: 'clarify.request'
+    } as any)
+    expect(getUiState().status).toBe('waiting for input…')
+
+    onEvent({ payload: { kind: 'clarify', request_id: 'rid-status-1' }, type: 'prompt.expire' } as any)
+    // busy defaults false in a fresh ui state → 'ready'
+    expect(getUiState().status).toBe('ready')
+  })
+
+  it('does not emit a system line for a no-op (stale) prompt.expire', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { choices: ['a'], question: 'q?', request_id: 'rid-live' },
+      type: 'clarify.request'
+    } as any)
+
+    // Expiry for a DIFFERENT request id — nothing should be cleared and no
+    // "timed out" line should be surfaced.
+    onEvent({ payload: { kind: 'clarify', request_id: 'rid-gone' }, type: 'prompt.expire' } as any)
+
+    expect(ctx.system.sys).not.toHaveBeenCalledWith(expect.stringContaining('timed out'))
+    expect(getOverlayState().clarify).toMatchObject({ requestId: 'rid-live' })
+  })
 })

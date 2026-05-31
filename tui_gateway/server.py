@@ -743,7 +743,15 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
         # and capturing keystrokes — the agent thread is about to
         # resume on an empty answer, so we MUST tell the client to
         # tear the prompt down or the UI is stuck until next message.
-        if not answered:
+        #
+        # Race guard: _respond() may set _answers[rid] + ev.set() AFTER
+        # ev.wait() already returned False (timeout) but before we reach
+        # here. In that interleaving the answer was genuinely accepted —
+        # _block returns it below — so emitting prompt.expire would be a
+        # false timeout that clears the overlay out from under a real
+        # answer. Re-check _answers (not just the stale `answered` flag)
+        # so a late-but-accepted answer suppresses the expiry.
+        if not answered and rid not in _answers:
             try:
                 _emit(
                     "prompt.expire",

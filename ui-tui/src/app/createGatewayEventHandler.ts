@@ -692,16 +692,28 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // prompt that opened in the meantime.
         const { kind, request_id } = ev.payload
         const ov = getOverlayState()
+        let cleared = false
 
         if (kind === 'clarify' && ov.clarify?.requestId === request_id) {
           patchOverlayState({ clarify: null })
+          cleared = true
         } else if (kind === 'sudo' && ov.sudo?.requestId === request_id) {
           patchOverlayState({ sudo: null })
+          cleared = true
         } else if (kind === 'secret' && ov.secret?.requestId === request_id) {
           patchOverlayState({ secret: null })
+          cleared = true
         }
 
-        sys(`prompt timed out — ${kind} request cancelled`)
+        if (cleared) {
+          // The request event set a prompt-specific status ("waiting for
+          // input…" / "sudo password needed" / "secret input needed").
+          // Nothing else resets it once the prompt is gone, so the bar would
+          // keep claiming we're waiting while the agent streams. Snap it back
+          // to the real busy/ready state.
+          setStatus(statusFromBusy())
+          sys(`prompt timed out — ${kind} request cancelled`)
+        }
 
         return
       }
